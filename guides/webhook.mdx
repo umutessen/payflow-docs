@@ -1,0 +1,124 @@
+---
+title: 'Webhooks'
+description: 'Receive real-time payment events without polling.'
+icon: 'webhook'
+---
+
+## Overview
+
+Webhooks are HTTP POST requests PayFlow sends to your server
+when a payment changes state. They replace polling —
+instead of repeatedly calling `GET /payments/{id}`,
+your server receives a push notification the moment something happens.
+
+## Payment state — event map
+
+| State change         | Webhook event       |
+|----------------------|---------------------|
+| Processing → Settled | `payment.settled`   |
+| Processing → Failed  | `payment.failed`    |
+| Refund completed     | `refund.completed`  |
+
+<Warning>
+  Cancelled payments do **not** fire a webhook.
+  If your order system needs to react to cancellations,
+  poll `GET /payments/{id}` after calling DELETE.
+</Warning>
+
+## Register a webhook
+
+```bash
+curl -X POST https://sandbox.payflow.io/v1/webhooks \
+  -H "X-API-Key: pk_test_YOUR_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "url": "https://your-server.com/webhooks/payflow",
+    "events": ["payment.settled", "payment.failed"]
+  }'
+```
+
+**Store the `secret` from the response** — it is returned only once
+and is required for signature verification:
+
+```json
+{
+  "id": "wh_01HZDEF",
+  "url": "https://your-server.com/webhooks/payflow",
+  "events": ["payment.settled", "payment.failed"],
+  "secret": "whsec_live_abc123xyz456..."
+}
+```
+
+## Verify webhook signatures
+
+<Warning>
+  **Always verify the signature before processing an event.**
+  Without verification, an attacker who knows your webhook URL
+  can send fake payment.settled events to your server.
+</Warning>
+
+Every PayFlow webhook includes a `PayFlow-Signature` header:
+
+```
+PayFlow-Signature: t=1699832520,v1=3b4c2d1e8f9a...
+```
+
+- `t` — Unix timestamp when PayFlow sent the event
+- `v1` — HMAC-SHA256 signature
+
+### Verification steps
+
+<Steps>
+  <Step title="Extract the timestamp and signature">
+    Parse the `PayFlow-Signature` header and extract `t` and `v1`.
+  </Step>
+  <Step title="Check the timestamp tolerance">
+    Reject the event if `t` is more than **300 seconds** in the past.
+    This prevents replay attacks.
+  </Step>
+  <Step title="Compute the expected signature">
+    Construct the signed payload string: `{t}.{raw_request_body}`
+
+    Compute HMAC-SHA256 using your webhook `secret` as the key.
+
+    <Warning>
+      Use the **raw request body** — not a parsed or re-serialised JSON object.
+      Any whitespace difference will break the signature.
+    </Warning>
+  </Step>
+  <Step title="Compare signatures">
+    Compare your computed signature to `v1` using a
+    constant-time comparison function to prevent timing attacks.
+    Reject the request with `401` if they don't match.
+  </Step>
+</Steps>
+
+## Event payload
+
+```json
+{
+  "id": "evt_01HZ...",
+  "type": "payment.settled",
+  "created_at": "2024-11-01T10:22:45Z",
+  "data": {
+    "payment_id": "pay_01HZ9MXYZ",
+    "amount": 5000,
+    "currency": "GBP"
+  }
+}
+```
+
+## Retry policy
+
+If your server returns anything other than a `2xx` status,
+PayFlow retries the event with exponential backoff:
+
+| Attempt | Delay |
+|---------|-------|
+| 1st retry | 5 minutes |
+| 2nd retry | 30 minutes |
+| 3rd retry | 2 hours |
+
+After 3 failed retries the event is marked as failed.
+Check your webhook delivery log in the dashboard.
+
