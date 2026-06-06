@@ -1,0 +1,55 @@
+---
+title: 'Changelog'
+description: 'PayFlow API version history and deprecation notices.'
+icon: 'list-check'
+---
+
+<Warning>
+  **v1 deprecation notice**
+
+  PayFlow API v1 will be sunset on **1 January 2026**.
+  Migrate to v2 before this date.
+  v1 responses include `Deprecation: true` and `Sunset` headers.
+  [Read the v2 migration guide →](/guides/v2-migration)
+</Warning>
+
+## 2024-11-01 — v1.0.0
+
+**Initial release.**
+
+- `POST /v1/payments` — create payments with idempotency
+- `GET /v1/payments` — cursor-paginated payment list
+- `GET /v1/payments/{id}` — retrieve payment with full state machine
+- `POST /v1/payments/{id}/refunds` — full and partial refunds
+- `POST /v1/webhooks` — webhook registration with HMAC-SHA256 signing
+- Authentication via `X-API-Key` header
+- RFC 9457 Problem Details on all error responses
+
+## Deprecation policy
+
+PayFlow follows a **minimum 6-month deprecation window**:
+
+1. `Deprecation: true` header added to all v1 responses
+2. `Sunset: {date}` header specifies the removal date (RFC 8594)
+3. Email notification to all registered merchants
+4. v2 available in parallel throughout the window
+5. v1 removed on Sunset date
+
+<Info>
+  Check for the `Deprecation` header in your integration
+  to get early warning of upcoming changes.
+</Info>
+
+## Versioning strategy
+
+PayFlow uses **URL path versioning** — the version is part of the path:
+
+```
+https://api.payflow.io/v1/payments   ← current
+https://api.payflow.io/v2/payments   ← future
+```
+
+**Why path versioning?** Explicit in logs, browser URLs, and curl commands.
+No hidden header to forget. Every request is unambiguously versioned.
+[Read more about our versioning decisions →](/guides/versioning)
+
