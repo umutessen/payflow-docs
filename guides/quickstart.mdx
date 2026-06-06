@@ -1,0 +1,26 @@
+---
+title: 'Quickstart'
+description: 'Make your first PayFlow API call in under 5 minutes.'
+icon: 'bolt'
+---
+
+## Before you start
+
+You'll need a PayFlow API key. Get one from the [merchant dashboard](https://dashboard.payflow.io/keys).
+
+<Note>
+  Use your **sandbox** API key (prefix `pk_test_`) while following this guide.
+  Sandbox payments don't move real money.
+</Note>
+
+## Step 1 — make your first payment
+
+<CodeGroup>
+```bash cURL
+curl -X POST https://sandbox.payflow.io/v1/payments \
+  -H "X-API-Key: pk_test_YOUR_KEY" \
+  -H "Idempotency-Key: $(uuidgen)" \
+  -H "Content-Type: application/json" \
+  -d '{"amount": 5000, "currency": "GBP", "merchant_id": "mer_ABC123"}'
+```
+</CodeGroup>
