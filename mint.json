@@ -1,0 +1,27 @@
+{
+  "name": "PayFlow",
+  "colors": { "primary": "#378ADD" },
+  "openapi": "payflow-api.yaml",
+  "api": {
+    "baseUrl": "https://sandbox.payflow.io/v1",
+    "auth": { "method": "key", "name": "X-API-Key" }
+  },
+  "navigation": [
+    {
+      "group": "Get started",
+      "pages": ["guides/quickstart", "guides/authentication"]
+    },
+    {
+      "group": "Core concepts",
+      "pages": ["guides/webhooks", "guides/errors"]
+    },
+    {
+      "group": "API Reference",
+      "pages": ["api-reference/openapi"]
+    },
+    {
+      "group": "Resources",
+      "pages": ["changelog"]
+    }
+  ]
+}
