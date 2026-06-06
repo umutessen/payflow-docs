@@ -1,5 +1,6 @@
 {
   "name": "PayFlow",
+  "favicon": "images/favicon.png",
   "colors": { "primary": "#378ADD" },
   "openapi": "payflow-api.yaml",
   "api": {
