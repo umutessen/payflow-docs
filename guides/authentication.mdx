@@ -1,0 +1,175 @@
+---
+title: 'Authentication'
+description: 'Secure your PayFlow integration with API keys. Every request must include a valid X-API-Key header.'
+icon: 'key'
+---
+
+## Overview
+
+PayFlow uses API keys to authenticate requests. Your API key identifies your merchant
+account and grants access to the PayFlow API. All API requests must be made over HTTPS —
+requests made over plain HTTP will be rejected.
+
+<Note>
+  Your API key carries the same privileges as your merchant account. Keep it secure
+  and never share it in publicly accessible areas such as GitHub, client-side code,
+  or browser URLs.
+</Note>
+
+## Get your API key
+
+<Steps>
+  <Step title="Log in to the PayFlow dashboard">
+    Go to [dashboard.payflow.io](https://dashboard.payflow.io) and sign in with
+    your merchant account credentials.
+  </Step>
+  <Step title="Navigate to API Keys">
+    In the left sidebar, click **Developers** → **API Keys**.
+  </Step>
+  <Step title="Create a new key">
+    Click **Create API Key**. Give it a descriptive name (e.g. `production-server`
+    or `staging-integration`) so you can identify it later.
+  </Step>
+  <Step title="Copy and store your key securely">
+    The key is shown only once. Copy it immediately and store it in a secrets
+    manager or environment variable. You cannot retrieve the key value after
+    closing this dialog — you would need to create a new one.
+  </Step>
+</Steps>
+
+## Send your API key
+
+Include your API key in the `X-API-Key` header on every request.
+
+<CodeGroup>
+```bash cURL
+curl -X POST https://sandbox.payflow.io/v1/payments \
+  -H "X-API-Key: pk_test_YOUR_KEY_HERE" \
+  -H "Idempotency-Key: $(uuidgen)" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "amount": 5000,
+    "currency": "GBP",
+    "merchant_id": "mer_ABC123",
+    "reference": "order_001"
+  }'
+```
+
+```python Python
+import requests
+
+response = requests.post(
+    "https://sandbox.payflow.io/v1/payments",
+    headers={
+        "X-API-Key": "pk_test_YOUR_KEY_HERE",
+        "Idempotency-Key": "order_001_attempt_1",
+        "Content-Type": "application/json",
+    },
+    json={
+        "amount": 5000,
+        "currency": "GBP",
+        "merchant_id": "mer_ABC123",
+        "reference": "order_001",
+    },
+)
+```
+
+```javascript Node.js
+const response = await fetch("https://sandbox.payflow.io/v1/payments", {
+  method: "POST",
+  headers: {
+    "X-API-Key": process.env.PAYFLOW_API_KEY,
+    "Idempotency-Key": crypto.randomUUID(),
+    "Content-Type": "application/json",
+  },
+  body: JSON.stringify({
+    amount: 5000,
+    currency: "GBP",
+    merchant_id: "mer_ABC123",
+    reference: "order_001",
+  }),
+});
+```
+</CodeGroup>
+
+<Warning>
+  **Never send your API key as a query parameter.**
+
+  Query parameters appear in server access logs, browser history, and any
+  monitoring or analytics tool that captures URLs. A request like
+  `GET /payments?api_key=pk_live_...` permanently exposes your key anywhere
+  that URL is logged or shared.
+
+  Always use the `X-API-Key` header — headers are not logged by default.
+</Warning>
+
+<Warning>
+  **Never include API keys in client-side code.**
+
+  Keys embedded in browser JavaScript, mobile app binaries, or any code
+  shipped to end users can be extracted and abused. API calls that require
+  your PayFlow key must be made from your server, not from the client.
+</Warning>
+
+## Key types
+
+PayFlow issues two types of API key. You can identify which type you have by its prefix.
+
+| Type | Prefix | Environment | Behaviour |
+|------|--------|-------------|-----------|
+| **Test key** | `pk_test_` | Sandbox | Payments are simulated. No real money moves. Safe for development and CI. |
+| **Live key** | `pk_live_` | Production | Payments are real. Charges real bank accounts. Use only on your production server. |
+
+<Note>
+  All examples in this documentation use `pk_test_` keys pointed at
+  `https://sandbox.payflow.io/v1`. Switch the key prefix and base URL
+  when you are ready to go live.
+</Note>
+
+## Key rotation
+
+Rotate your API keys regularly or immediately if you suspect a key has been
+compromised. PayFlow supports multiple active keys per merchant account so you
+can rotate without downtime.
+
+<Steps>
+  <Step title="Create a new key">
+    In the dashboard under **Developers → API Keys**, create a new key.
+    Give it a name that makes the rotation date clear, e.g. `production-2025-06`.
+  </Step>
+  <Step title="Deploy the new key to your server">
+    Update your server's environment variable (`PAYFLOW_API_KEY`) to the new
+    key value. Deploy your application. Verify requests are succeeding with the
+    new key before proceeding.
+  </Step>
+  <Step title="Revoke the old key">
+    Once you have confirmed the new key is working, return to the dashboard
+    and click **Revoke** on the old key. Revocation is immediate — any request
+    using the old key will receive a `401 Unauthorized` response.
+  </Step>
+</Steps>
+
+<Warning>
+  Revocation is **immediate and irreversible**. Ensure your new key is fully
+  deployed and verified before revoking the old one. If you revoke the wrong
+  key, you will need to create a replacement and redeploy.
+</Warning>
+
+## Authentication errors
+
+If your key is missing or invalid, PayFlow returns a `401 Unauthorized` response
+with a [RFC 9457 Problem Details](/guides/errors) body:
+
+```json
+{
+  "type": "https://errors.payflow.io/unauthorized",
+  "title": "Unauthorized",
+  "status": 401,
+  "detail": "No valid API key provided. Check your X-API-Key header.",
+  "instance": "https://api.payflow.io/v1/payments"
+}
+```
+
+Switch on `error.type` in your error handler — do not match on `title` or `detail`
+as these strings may change. See the [error handling guide](/guides/errors) for the
+full catalogue of error responses.
