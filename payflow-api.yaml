@@ -1,0 +1,674 @@
+openapi: "3.1.0"
+
+info:
+  title: PayFlow API
+  version: "1.0.0"
+  description: B2B payment processing API for merchants.
+  contact:
+    name: PayFlow Developer Support
+    email: api@payflow.io
+    url: https://docs.payflow.io
+
+servers:
+  - url: https://api.payflow.io/v1
+    description: Production
+  - url: https://sandbox.payflow.io/v1
+    description: Sandbox — safe for testing, no real money moves
+
+security:
+  - ApiKeyAuth: []
+
+components:
+
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: Your PayFlow API key. Obtain from the merchant dashboard.
+    OAuth2:
+      type: oauth2
+      flows:
+        clientCredentials:  # ← machine-to-machine, no user login
+          tokenUrl: https://auth.payflow.io/oauth/token
+          scopes:
+            payments:read:   Read payment data
+            payments:write:  Create and manage payments
+            refunds:write:   Create refunds
+            webhooks:write:  Manage webhook subscriptions
+
+  schemas:
+
+    Payment:
+      type: object
+      properties:
+        id:
+          type: string
+          example: pay_01HZ9MXYZ
+        status:
+          type: string
+          enum: [pending, processing, settled, failed, cancelled, refunded]
+        amount:
+          type: integer
+          description: Amount in minor units (pence for GBP, cents for USD)
+          example: 5000
+        currency:
+          type: string
+          example: GBP
+        idempotency_key:
+          type: string
+          example: order_789_attempt_1
+        created_at:
+          type: string
+          format: date-time
+          example: "2024-11-01T10:22:00Z"
+        settled_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: Timestamp when payment reached settled status. Null for non-settled payments.
+          example: "2024-11-01T10:22:45Z"
+
+    Refund:
+      type: object
+      properties:
+        id:
+          type: string
+          example: ref_01HZABC
+        payment_id:
+          type: string
+          example: pay_01HZ9MXYZ
+        amount:
+          type: integer
+          description: Refunded amount in minor units. Must be <= original payment amount.
+          example: 2500
+        status:
+          type: string
+          enum: [pending, completed, failed]
+        created_at:
+          type: string
+          format: date-time
+          example: "2024-11-01T11:00:00Z"
+
+    Webhook:
+      type: object
+      properties:
+        id:
+          type: string
+          example: wh_01HZDEF
+        url:
+          type: string
+          format: uri
+        events:
+          type: array
+          items:
+            type: string
+            enum: [payment.settled, payment.failed, refund.completed]
+        secret:
+          type: string
+          description: |
+            Signing secret for verifying webhook payloads.
+            Returned ONLY on registration (POST /webhooks).
+            Store securely — never transmitted again.
+          example: whsec_live_abc123xyz456...
+        created_at:
+          type: string
+          format: date-time
+
+    WebhookEvent:
+      type: object
+      properties:
+        id:
+          type: string
+          example: evt_01HZ...
+        type:
+          type: string
+          enum: [payment.settled, payment.failed, refund.completed]
+        created_at:
+          type: string
+          format: date-time
+        data:
+          type: object
+          description: Event payload — shape varies by event type.
+        x-payflow-signature-header:   # extension field — docs only
+          type: string
+          description: |
+            The PayFlow-Signature HTTP header on every outbound event.
+            Format: t={unix_timestamp},v1={hmac_sha256_hex}
+            Verify using HMAC-SHA256 of "{t}.{raw_body}" with your webhook secret.
+            Reject events where timestamp is older than 300 seconds.
+            See: https://docs.payflow.io/webhooks/signatures
+          example: t=1699832520,v1=3b4c2d1e8f9a7b6c...
+
+    ProblemDetails:
+      type: object
+      required: [type, title, status]
+      properties:
+        type:
+          type: string
+          format: uri
+          description: Stable URI identifying the error type. Machine-readable.
+          example: https://errors.payflow.io/insufficient-funds
+        title:
+          type: string
+          description: Short human-readable summary of the error type.
+          example: Insufficient funds
+        status:
+          type: integer
+          description: HTTP status code.
+          example: 422
+        detail:
+          type: string
+          description: Human-readable explanation specific to this occurrence.
+          example: The account balance is below the requested payment amount.
+        instance:
+          type: string
+          format: uri
+          description: URI of the specific resource that caused the error.
+          example: https://api.payflow.io/v1/payments/pay_01HZ
+
+    PaymentList:
+      type: object
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/Payment'
+        next_cursor:
+          type: string
+          nullable: true
+          description: Pass this value as ?cursor= in the next request. Null when no more pages.
+          example: cur_eyJpZCI6InBheV8wMSJ9
+        has_more:
+          type: boolean
+          example: true
+        total_count:
+          type: integer
+          nullable: true
+          description: |
+            Total number of matching payments across all pages.
+            Only returned when include_total=true is passed.
+            Omitted by default for performance.
+          example: 247
+
+paths:
+
+  /payments:
+    post:
+      summary: Initiate a payment
+      operationId: createPayment
+      tags: [Payments]
+      description: |
+        Creates a new payment. This operation is idempotent — if you supply
+        the same Idempotency-Key with an identical request body, the original
+        response is returned without creating a duplicate payment.
+        A new payment is always returned in `pending` status.
+
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: true
+          description: |
+            Client-generated unique key for this request (UUID recommended).
+            Re-sending with the same key returns the original response.
+            Re-sending with the same key but a different body returns 409.
+          schema:
+            type: string
+            example: a3f8c2d1-7b44-4e2a-91fa-bc12de345678
+
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [amount, currency, merchant_id]
+              properties:
+                amount:
+                  type: integer
+                  description: Amount in minor units (pence/cents). Must be > 0.
+                  minimum: 1
+                  example: 5000
+                currency:
+                  type: string
+                  description: ISO 4217 currency code.
+                  example: GBP
+                merchant_id:
+                  type: string
+                  description: Your PayFlow merchant identifier.
+                  example: mer_ABC123
+                reference:
+                  type: string
+                  description: Optional. Your internal order or reference ID.
+                  example: order_789
+            example:
+              amount: 5000
+              currency: GBP
+              merchant_id: mer_ABC123
+              reference: order_789
+
+      responses:
+
+        "201":
+          description: Payment created. Status will be `pending`.
+          headers:
+            X-RateLimit-Limit:
+              description: Maximum requests allowed per minute.
+              schema:
+                type: integer
+                example: 100
+            X-RateLimit-Remaining:
+              description: Requests remaining in current window.
+              schema:
+                type: integer
+                example: 97
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Payment'
+              example:
+                id: pay_01HZ9MXYZ
+                status: pending
+                amount: 5000
+                currency: GBP
+                idempotency_key: a3f8c2d1-7b44-4e2a-91fa-bc12de345678
+                created_at: "2024-11-01T10:22:00Z"
+
+        "400":
+          description: Bad request — malformed JSON or missing required field.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+              example:
+                type: https://errors.payflow.io/bad-request
+                title: Bad request
+                status: 400
+                detail: Field 'amount' is required and must be a positive integer.
+                instance: https://api.payflow.io/v1/payments
+
+        "401":
+          description: Unauthorised — X-API-Key header missing or invalid.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+              example:
+                type: https://errors.payflow.io/unauthorized
+                title: Unauthorized
+                status: 401
+                detail: No valid API key provided. Check your X-API-Key header.
+                instance: https://api.payflow.io/v1/payments
+
+        "409":
+          description: Conflict — Idempotency-Key already used with a different request body.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+              example:
+                type: https://errors.payflow.io/idempotency-conflict
+                title: Idempotency key conflict
+                status: 409
+                detail: The key 'a3f8c2d1...' was previously used with a different request body.
+                instance: https://api.payflow.io/v1/payments
+
+        "422":
+          description: Unprocessable — request is valid but violates a business rule.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+              example:
+                type: https://errors.payflow.io/insufficient-funds
+                title: Insufficient funds
+                status: 422
+                detail: The merchant account balance is below the requested payment amount.
+                instance: https://api.payflow.io/v1/payments
+
+        "429":
+          description: Too many requests — rate limit exceeded.
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying.
+              schema:
+                type: integer
+                example: 30
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+              example:
+                type: https://errors.payflow.io/rate-limited
+                title: Rate limit exceeded
+                status: 429
+                detail: You have exceeded 100 requests per minute. Retry after 30 seconds.
+                instance: https://api.payflow.io/v1/payments
+
+        "503":
+          description: Service unavailable — downstream bank network unreachable. Safe to retry.
+          headers:
+            Retry-After:
+              schema:
+                type: integer
+                example: 60
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+              example:
+                type: https://errors.payflow.io/service-unavailable
+                title: Service unavailable
+                status: 503
+                detail: The payment network is temporarily unavailable. Retry with the same Idempotency-Key.
+                instance: https://api.payflow.io/v1/payments
+    get:
+      summary: List payments
+      operationId: listPayments
+      tags: [Payments]
+      description: |
+        Returns a cursor-paginated list of payments for the authenticated merchant.
+        Results are ordered by created_at descending (newest first).
+        Pass the next_cursor value from a response into the cursor parameter
+        to retrieve the next page. When has_more is false, you have reached
+        the last page. Omit cursor to start from the beginning.
+
+      parameters:
+
+        - name: cursor
+          in: query
+          required: false
+          description: |
+            Opaque cursor from the previous response next_cursor field.
+            Omit to start from the first page.
+          schema:
+            type: string
+            example: cur_eyJpZCI6InBheV8wMSJ9
+
+        - name: limit
+          in: query
+          required: false
+          description: Number of results per page. Defaults to 20, maximum 100.
+          schema:
+            type: integer
+            default: 50
+            minimum: 1
+            maximum: 100
+            example: 50
+
+        - name: status
+          in: query
+          required: false
+          description: Filter results by payment status.
+          schema:
+            type: string
+            enum: [pending, processing, settled, failed, cancelled, refunded]
+            example: settled
+
+        - name: created_after
+          in: query
+          required: false
+          description: Return payments created after this ISO 8601 datetime (inclusive).
+          schema:
+            type: string
+            format: date-time
+            example: "2024-11-01T00:00:00Z"
+
+        - name: created_before
+          in: query
+          required: false
+          description: Return payments created before this ISO 8601 datetime (exclusive).
+          schema:
+            type: string
+            format: date-time
+            example: "2024-11-30T23:59:59Z"
+
+      responses:
+
+        "200":
+          description: Paginated list of payments.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaymentList'
+              examples:
+                first_page:
+                  summary: First page — more results available
+                  value:
+                    data:
+                      - id: pay_01HZ9MXYZ
+                        status: settled
+                        amount: 5000
+                        currency: GBP
+                        created_at: "2024-11-01T10:22:00Z"
+                      - id: pay_01HZ9MABC
+                        status: pending
+                        amount: 2500
+                        currency: GBP
+                        created_at: "2024-11-01T09:15:00Z"
+                    next_cursor: cur_eyJpZCI6InBheV8wMSJ9
+                    has_more: true
+                last_page:
+                  summary: Last page — no more results
+                  value:
+                    data:
+                      - id: pay_01HZ9MOLD
+                        status: settled
+                        amount: 1000
+                        currency: GBP
+                        created_at: "2024-10-15T08:00:00Z"
+                    next_cursor: null
+                    has_more: false
+
+        "401":
+          description: Unauthorised.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+              example:
+                type: https://errors.payflow.io/unauthorized
+                title: Unauthorized
+                status: 401
+                detail: No valid API key provided. Check your X-API-Key header.
+                instance: https://api.payflow.io/v1/payments
+
+        "422":
+          description: Invalid query parameter — e.g. unrecognised status value or malformed date.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+              example:
+                type: https://errors.payflow.io/invalid-parameter
+                title: Invalid parameter
+                status: 422
+                detail: "Query parameter 'status' must be one of: pending, processing, settled, failed, cancelled, refunded."
+                instance: https://api.payflow.io/v1/payments
+
+  /payments/{payment_id}:
+    get:
+      summary: Retrieve a payment
+      operationId: getPayment
+      tags: [Payments]
+      description: |
+        Returns a single payment by ID. Use this endpoint to poll for
+        status changes after creating a payment. A payment moves through
+        states: pending → processing → settled or failed.
+        Once settled or failed the status will not change — these are
+        terminal states. Subscribe to webhooks to avoid polling.
+
+      parameters:
+        - name: payment_id
+          in: path
+          required: true
+          description: The unique ID of the payment. Returned by POST /payments.
+          schema:
+            type: string
+            example: pay_01HZ9MXYZ
+
+      responses:
+
+        "200":
+          description: Payment found. Check the status field for current state.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Payment'
+              examples:
+                pending:
+                  summary: Payment is pending — just created, not yet submitted
+                  value:
+                    id: pay_01HZ9MXYZ
+                    status: pending
+                    amount: 5000
+                    currency: GBP
+                    idempotency_key: a3f8c2d1-7b44-4e2a-91fa-bc12de345678
+                    created_at: "2024-11-01T10:22:00Z"
+                processing:
+                  summary: Payment is processing — submitted to bank network
+                  value:
+                    id: pay_01HZ9MXYZ
+                    status: processing
+                    amount: 5000
+                    currency: GBP
+                    idempotency_key: a3f8c2d1-7b44-4e2a-91fa-bc12de345678
+                    created_at: "2024-11-01T10:22:00Z"
+                settled:
+                  summary: Payment settled — terminal success state
+                  value:
+                    id: pay_01HZ9MXYZ
+                    status: settled
+                    amount: 5000
+                    currency: GBP
+                    idempotency_key: a3f8c2d1-7b44-4e2a-91fa-bc12de345678
+                    created_at: "2024-11-01T10:22:00Z"
+                    settled_at: "2024-11-01T10:22:00Z"
+                failed:
+                  summary: Payment failed — terminal failure, create a new payment
+                  value:
+                    id: pay_01HZ9MXYZ
+                    status: failed
+                    amount: 5000
+                    currency: GBP
+                    idempotency_key: a3f8c2d1-7b44-4e2a-91fa-bc12de345678
+                    created_at: "2024-11-01T10:22:00Z"
+                cancelled:
+                  summary: Payment cancelled — stopped before processing
+                  value:
+                    id: pay_01HZ9MXYZ
+                    status: cancelled
+                    amount: 5000
+                    currency: GBP
+                    idempotency_key: a3f8c2d1-7b44-4e2a-91fa-bc12de345678
+                    created_at: "2024-11-01T10:22:00Z"
+                refunded:
+                  summary: Payment fully refunded — terminal
+                  value:
+                    id: pay_01HZ9MXYZ
+                    status: refunded
+                    amount: 5000
+                    currency: GBP
+                    idempotency_key: a3f8c2d1-7b44-4e2a-91fa-bc12de345678
+                    created_at: "2024-11-01T10:22:00Z"
+
+        "401":
+          description: Unauthorised.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+              example:
+                type: https://errors.payflow.io/unauthorized
+                title: Unauthorized
+                status: 401
+                detail: No valid API key provided.
+                instance: https://api.payflow.io/v1/payments/pay_01HZ9MXYZ
+
+        "403":
+          description: Forbidden — this payment belongs to a different merchant.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+              example:
+                type: https://errors.payflow.io/forbidden
+                title: Forbidden
+                status: 403
+                detail: You do not have permission to access payment pay_01HZ9MXYZ.
+                instance: https://api.payflow.io/v1/payments/pay_01HZ9MXYZ
+
+        "404":
+          description: Payment not found — ID does not exist.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+              example:
+                type: https://errors.payflow.io/not-found
+                title: Not found
+                status: 404
+                detail: Payment pay_01HZ9MXYZ does not exist.
+                instance: https://api.payflow.io/v1/payments/pay_01HZ9MXYZ
+
+  /payments/{payment_id}/refunds:
+    post:
+      summary: Initiate a refund
+      operationId: createRefund
+      tags: [Refunds]
+      parameters:
+        - name: payment_id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "201":
+          description: Refund initiated
+
+  /payments/{payment_id}/refunds/{refund_id}:
+    get:
+      summary: Retrieve a refund
+      operationId: getRefund
+      tags: [Refunds]
+      parameters:
+        - name: payment_id
+          in: path
+          required: true
+          schema: { type: string }
+        - name: refund_id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Refund found
+
+  /webhooks:
+    post:
+      summary: Register a webhook
+      operationId: createWebhook
+      tags: [Webhooks]
+      responses:
+        "201":
+          description: Webhook registered
+    get:
+      summary: List webhooks
+      operationId: listWebhooks
+      tags: [Webhooks]
+      responses:
+        "200":
+          description: List of webhook subscriptions
+
+  /webhooks/{webhook_id}:
+    delete:
+      summary: Delete a webhook
+      operationId: deleteWebhook
+      tags: [Webhooks]
+      parameters:
+        - name: webhook_id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "204":
+          description: Webhook deleted
