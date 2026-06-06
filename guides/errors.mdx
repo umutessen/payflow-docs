@@ -1,0 +1,130 @@
+---
+title: 'Error handling'
+description: 'Every PayFlow error follows RFC 9457 Problem Details — machine-readable and actionable.'
+icon: 'triangle-exclamation'
+---
+
+## Error format
+
+All PayFlow errors return `application/problem+json`
+and follow [RFC 9457 Problem Details](https://www.rfc-editor.org/rfc/rfc9457):
+
+```json
+{
+  "type":     "https://errors.payflow.io/insufficient-funds",
+  "title":    "Insufficient funds",
+  "status":   422,
+  "detail":   "The merchant account balance is below the requested amount.",
+  "instance": "https://api.payflow.io/v1/payments/pay_01HZ9MXYZ"
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `type` | Stable URI — use this to programmatically identify the error. Switch on this value in your error handler. |
+| `title` | Short human-readable summary. Stable — safe to display. |
+| `status` | HTTP status code — mirrors the HTTP response status. |
+| `detail` | Human-readable explanation for this specific occurrence. |
+| `instance` | URI of the resource that caused the error. |
+
+<Tip>
+  Switch on `type` in your code, not on `title` or `detail`.
+  `type` is a stable contract — `detail` may change wording.
+</Tip>
+
+## Error catalogue
+
+### 400 Bad request
+**type:** `https://errors.payflow.io/bad-request`
+
+Malformed JSON or missing required field. Fix the request before retrying.
+
+### 401 Unauthorized
+**type:** `https://errors.payflow.io/unauthorized`
+
+`X-API-Key` header missing or invalid. Check your API key.
+Do not retry with the same key.
+
+### 403 Forbidden
+**type:** `https://errors.payflow.io/forbidden`
+
+Valid key but you don't have permission to access this resource.
+The resource may belong to a different merchant.
+
+### 404 Not found
+**type:** `https://errors.payflow.io/not-found`
+
+The requested resource does not exist. Check the ID.
+
+### 409 Idempotency conflict
+**type:** `https://errors.payflow.io/idempotency-conflict`
+
+The `Idempotency-Key` was previously used with a different request body.
+This is a client error — generate a new key for new requests.
+
+<Warning>
+  A 409 idempotency conflict is different from a duplicate request.
+  If you retry with the **same** key and **same** body, you receive
+  the original `201` response — no error. A 409 only occurs when
+  the body differs, indicating a programming error.
+</Warning>
+
+### 422 Unprocessable
+**type:** varies by business rule
+
+Request is valid but fails a business rule:
+
+| type URI suffix | Meaning |
+|-----------------|---------|
+| `insufficient-funds` | Account balance too low |
+| `invalid-parameter` | Query param outside allowed values |
+| `refund-exceeds-amount` | Refund amount > original payment |
+| `unsupported-currency` | Currency not accepted |
+
+### 429 Rate limited
+**type:** `https://errors.payflow.io/rate-limited`
+
+You've exceeded 100 requests/minute.
+Check the `Retry-After` header and wait before retrying.
+
+```http
+HTTP/1.1 429 Too Many Requests
+Retry-After: 30
+Content-Type: application/problem+json
+```
+
+### 503 Service unavailable
+**type:** `https://errors.payflow.io/service-unavailable`
+
+Downstream bank network temporarily unavailable.
+Safe to retry with the **same** `Idempotency-Key` after `Retry-After` seconds.
+
+## Recommended error handler
+
+```javascript
+async function handlePayFlowError(response) {
+  const error = await response.json();
+
+  switch (error.type) {
+    case 'https://errors.payflow.io/insufficient-funds':
+      return promptMerchantToTopUp();
+
+    case 'https://errors.payflow.io/idempotency-conflict':
+      throw new Error('BUG: idempotency key reused with different body');
+
+    case 'https://errors.payflow.io/rate-limited':
+      const retryAfter = response.headers.get('Retry-After');
+      await sleep(retryAfter * 1000);
+      return retry();
+
+    case 'https://errors.payflow.io/service-unavailable':
+      await sleep(response.headers.get('Retry-After') * 1000);
+      return retry(); // same Idempotency-Key is safe
+
+    default:
+      logError(error);
+      throw new Error(error.detail);
+  }
+}
+```
+
